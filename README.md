@@ -22,16 +22,35 @@ Statloom separates this infrastructure from the analysis itself, allowing teams 
 
 ## System Architecture
 
+Green is built, yellow is planned, and the dashed edge marks an open design decision.
+
 ```mermaid
-flowchart LR
-    User([User / Client]) -->|submit job, poll status| API[REST API]
-    API -->|create job| PG[(Statloom Postgres<br/>jobs, results, registries)]
-    API -->|publish| K[[Kafka]]
-    K --> W1[Worker]
-    K --> W2[Worker]
-    W1 & W2 -->|run metric SQL, read-only| UDB[(User database)]
-    W1 & W2 -->|execute| ENG[Statistical engine]
-    W1 & W2 -->|persist result + status| PG
+flowchart TD
+Client([Client])
+API["REST API<br/>(planned)"]
+K[["Kafka<br/>(planned)"]]
+W["Worker x N<br/>(planned)"]
+ENG["Statistical engine<br/>(planned)"]
+CONN["Connector layer<br/>(built)"]
+UDB[("User database<br/>read-only")]
+DB["core/db<br/>(built)"]
+PG[("Statloom Postgres<br/>registries, jobs, results<br/>(tables planned)")]
+
+Client -->|"Submit / Poll / Fetch"| API
+API -->|"1. Store job"| DB
+API -.->|"2. Publish job"| K
+K <-->|"3. Deliver job<br/>8. Commit offset"| W
+W -->|"4. Claim job"| DB
+W -->|"5. Execute SQL"| CONN
+CONN --> UDB
+W -->|"6. Compute statistics"| ENG
+W -->|"7. Save result and status"| DB
+DB --> PG
+
+classDef built fill:#d4edda,stroke:#2e7d32,color:#000
+classDef planned fill:#fff3cd,stroke:#b58900,color:#000
+class CONN,DB built
+class API,K,W,ENG,PG planned
 ```
 
 Workers claim jobs, fetch metric data through a connector, run the selected engine, and write the result and job status in a single transaction.
