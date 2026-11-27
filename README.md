@@ -51,7 +51,7 @@ Workers claim jobs, fetch metric data through a connector, run the selected engi
 | Language | Python | Core services and statistical engines |
 | API | FastAPI, Pydantic | REST interface, request and engine contracts |
 | Persistence | PostgreSQL, SQLAlchemy 2.x, Alembic | Jobs, results, registries, migrations |
-| Messaging | Kafka (Redpanda locally) | Asynchronous job distribution |
+| Messaging | Apache Kafka (KRaft, single node locally) | Asynchronous job distribution |
 | Statistics | NumPy, SciPy, pandas | Reference engine |
 | Secrets | `cryptography` (Fernet) | Encrypted connection credentials |
 | Packaging | Docker | One image per service |
