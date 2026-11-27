@@ -39,7 +39,7 @@ Workers claim jobs, fetch metric data through a connector, run the selected engi
 ## Design Principles
 
 - **Modularity:** database-specific logic, metric definitions, and statistical engines are swappable without changing core orchestration.
-- **Correctness:** behavior is defined by explicit, testable invariants (see [v1/v1.md](v1/v1.md)).
+- **Correctness:** behavior is defined by explicit, testable invariants.
 - **Database-enforced invariants:** constraints, triggers, and foreign keys come first. Application services come second and handle races.
 - **Fault tolerance:** retries are safe, duplicates cannot produce duplicate results, and crashed workers do not strand jobs.
 - **Separation of concerns:** the API, workers, connectors, and engines interact only through defined interfaces.
@@ -76,9 +76,9 @@ SQLAlchemy, psycopg, Alembic, Pydantic, and pytest are in use today. The rest is
 
 ### Implemented so far
 
-`core/db` provides the transaction boundary, row locking, timestamp and append-only triggers, and a startup schema check. It is covered by 14 invariant tests that run against a real PostgreSQL instance. Details are in the [Component 1 docs](v1/component1plan.md).
+`core/db` provides the transaction boundary, row locking, timestamp and append-only triggers, and a startup schema check. It is covered by 14 invariant tests that run against a real PostgreSQL instance.
 
-`core/connectors` provides a provider-neutral connector interface, a registry, and a read-only PostgreSQL connector with query timeouts, a row cap, bound parameters, and typed, retry-classified errors. It is covered by 39 invariant tests, including a contract suite that runs the same checks against a fake provider and the Postgres one. Details are in the [Component 2 docs](v1/component2plan.md).
+`core/connectors` provides a provider-neutral connector interface, a registry, and a read-only PostgreSQL connector with query timeouts, a row cap, bound parameters, and typed, retry-classified errors. It is covered by 39 invariant tests, including a contract suite that runs the same checks against a fake provider and the Postgres one.
 
 ## Getting Started
 
@@ -121,8 +121,3 @@ V1 is deliberately narrow. Possible V2 directions, not commitments:
 ## Documentation
 
 - [Project specification](version.md): original V1 scope and acceptance criteria
-- [V1 components and invariants](v1/v1.md)
-- [Component 1 architecture](v1/component1.md): file layout and which invariants each file enforces
-- [Component 1 plan](v1/component1plan.md): `core/db` plan, navigation helper, and test commands
-- [Component 2 architecture](v1/component2.md): connector invariants, file layout, and which invariants each file enforces
-- [Component 2 plan](v1/component2plan.md): `core/connectors` function tables and test plan
