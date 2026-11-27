@@ -57,7 +57,7 @@ Workers claim jobs, fetch metric data through a connector, run the selected engi
 | Packaging | Docker | One image per service |
 | Orchestration | Kubernetes (local cluster) | Worker replicas and recovery |
 
-SQLAlchemy, psycopg, Alembic, and pytest are in use today. The rest is planned.
+SQLAlchemy, psycopg, Alembic, Pydantic, and pytest are in use today. The rest is planned.
 
 ## Development Status
 
@@ -66,7 +66,7 @@ SQLAlchemy, psycopg, Alembic, and pytest are in use today. The rest is planned.
 | # | Component | Status |
 |---|---|---|
 | 1 | Core data model | 🚧 In progress: `core/db` done; models, services, and security pending |
-| 2 | Database connector layer | ⬜ Planned |
+| 2 | Database connector layer | ✅ Built: interface, registry, and PostgreSQL provider |
 | 3 | Metric registry | ⬜ Planned |
 | 4 | Statistical engine interface and reference engine | ⬜ Planned |
 | 5 | REST API | ⬜ Planned |
@@ -78,6 +78,8 @@ SQLAlchemy, psycopg, Alembic, and pytest are in use today. The rest is planned.
 
 `core/db` provides the transaction boundary, row locking, timestamp and append-only triggers, and a startup schema check. It is covered by 14 invariant tests that run against a real PostgreSQL instance. Details are in the [Component 1 docs](v1/component1plan.md).
 
+`core/connectors` provides a provider-neutral connector interface, a registry, and a read-only PostgreSQL connector with query timeouts, a row cap, bound parameters, and typed, retry-classified errors. It is covered by 39 invariant tests, including a contract suite that runs the same checks against a fake provider and the Postgres one. Details are in the [Component 2 docs](v1/component2plan.md).
+
 ## Getting Started
 
 **Prerequisites:** Python 3.11+ and a local PostgreSQL installation (`initdb` and `pg_ctl` on your `PATH`), or a Postgres server you can create and drop databases on.
@@ -87,7 +89,7 @@ git clone https://github.com/faithscript/statloom.git
 cd statloom
 
 python3 -m venv .venv
-.venv/bin/pip install "sqlalchemy>=2" "psycopg[binary]>=3" alembic pytest
+.venv/bin/pip install "sqlalchemy>=2" "psycopg[binary]>=3" alembic pydantic pytest
 
 # run all tests (starts and stops a throwaway local Postgres automatically)
 .venv/bin/pytest -q
@@ -95,6 +97,7 @@ python3 -m venv .venv
 # run one test file or one test
 .venv/bin/pytest tests/invariants/test_db.py -v
 .venv/bin/pytest tests/invariants/test_db.py -k lock_row -v
+.venv/bin/pytest tests/invariants/test_connectors.py -v
 
 # or use your own Postgres
 TEST_PG_URL="postgresql+psycopg://user:pass@localhost:5432/postgres" .venv/bin/pytest -q
@@ -121,7 +124,5 @@ V1 is deliberately narrow. Possible V2 directions, not commitments:
 - [V1 components and invariants](v1/v1.md)
 - [Component 1 architecture](v1/component1.md): file layout and which invariants each file enforces
 - [Component 1 plan](v1/component1plan.md): `core/db` plan, navigation helper, and test commands
-
-## Acknowledgments
-
-Statloom's architecture is inspired by DoorDash's publicly documented Curie experimentation platform.
+- [Component 2 architecture](v1/component2.md): connector invariants, file layout, and which invariants each file enforces
+- [Component 2 plan](v1/component2plan.md): `core/connectors` function tables and test plan

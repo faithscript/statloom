@@ -1,8 +1,12 @@
 # Component 1 Plan: `core/db`
 
+**Status: ✅ built, 14 tests passing.** Where the build differed from the original plan, the text below describes what was actually built.
+
 ## Files
 - `core/db/session.py`
 - `core/db/base.py`
+- `core/migrations/` (`env.py`, `versions/0001_trigger_functions.py`) and `alembic.ini`
+- `tests/invariants/test_db.py` and shared fixtures in `tests/conftest.py`
 
 ## `session.py`
 
@@ -10,9 +14,9 @@
 |---|---|---|
 | `get_engine(url)` | Build the SQLAlchemy engine once (cached). Connect args set session timezone to UTC. | All timestamps are UTC |
 | `get_session_factory(engine)` | `sessionmaker` with `expire_on_commit=False` and `autoflush=False`. | Writes happen only at explicit points, so no hidden partial state |
-| `session_scope()` | Context manager: yield a session, commit on success, roll back on any exception, always close. The only supported way to open a transaction. | Multi-write operations are atomic (result + job `succeeded`, version allocation) |
-| `lock_row(session, model, id)` | `SELECT ... FOR UPDATE` helper for services that must serialize. | Gapless version numbers under concurrency; single job claimer |
-| `check_schema_current(engine)` | Compare the DB's Alembic head to the code's head; fail at startup on mismatch. | Schema changes come only through migrations |
+| `session_scope(factory=None)` | Context manager: yield a session, commit on success, roll back on any exception (including `KeyboardInterrupt`), always close. The only supported way to open a transaction. The factory is optional and defaults to the one for `$DATABASE_URL`. | Multi-write operations are atomic (result + job `succeeded`, version allocation) |
+| `lock_row(session, model, id)` | `SELECT ... FOR UPDATE` helper for services that must serialize. Raises `LookupError` if the row doesn't exist. | Gapless version numbers under concurrency; single job claimer |
+| `check_schema_current(engine)` | Compare the DB's Alembic head to the code's head; raises `SchemaMismatchError` on mismatch (DB behind or ahead). | Schema changes come only through migrations |
 
 ## `base.py`
 
@@ -23,6 +27,7 @@
 | `touch_updated_at` trigger (SQL, created in the first migration, attached per table) | Sets `updated_at = now()` on UPDATE. Never lets it move backward (`GREATEST(old, now())`). | `updated_at` monotonic |
 | `created_at` guard trigger | Rejects any UPDATE that changes `created_at`. | `created_at` immutable |
 | `forbid_mutation` trigger function | Reusable function raising on UPDATE/DELETE. Attached to version tables by their models later. | Published versions are immutable |
+| `attach_timestamp_triggers(table)`, `attach_forbid_mutation(table)` *(added during the build, not in the original plan)* | Return the DDL that attaches the trigger functions to a table. Future migrations call these instead of repeating the SQL. | Same invariants as the triggers above, applied per table |
 
 ## Test Plan (`tests/invariants/test_db.py`)
 - Session timezone is UTC, and inserted timestamps come back tz-aware UTC.
@@ -37,11 +42,13 @@
 1. `base.py` (Base, naming convention, mixin).
 2. First migration: the trigger functions (`touch_updated_at`, `created_at` guard, `forbid_mutation`).
 3. `session.py` (engine, factory, `session_scope`, `lock_row`, `check_schema_current`).
-4. Invariant tests, run against a real Postgres (Docker), not SQLite, since triggers and `FOR UPDATE` are Postgres behavior.
+4. Invariant tests, run against a real Postgres, not SQLite, since triggers and `FOR UPDATE` are Postgres behavior. In practice the fixture starts a throwaway local cluster with `initdb`/`pg_ctl` (Docker was not used), or uses your own server via `TEST_PG_URL`.
 
 ## Notes
 - The trigger functions live in migrations, not Python, so the DB guarantees them even if code is bypassed.
 - Services must never create sessions directly; they receive one from `session_scope`.
+- `now()` is the transaction's start time, so two updates in one transaction share a timestamp. `updated_at` is non-decreasing, not strictly increasing.
+- Each test gets its own freshly created database, so tests cannot affect each other.
 
 ---
 
@@ -81,12 +88,12 @@ Run from the repo root (`/Users/faithanyanwu/statloom`).
 ```bash
 # one-time setup
 python3 -m venv .venv
-.venv/bin/pip install "sqlalchemy>=2" "psycopg[binary]>=3" alembic pytest
+.venv/bin/pip install "sqlalchemy>=2" "psycopg[binary]>=3" alembic pydantic pytest
 
-# run all tests (starts and stops a throwaway local Postgres automatically; needs initdb on PATH)
+# run all tests, both components (starts and stops a throwaway local Postgres automatically; needs initdb on PATH)
 .venv/bin/pytest -q
 
-# one file, or one test
+# this component only, or one test
 .venv/bin/pytest tests/invariants/test_db.py -v
 .venv/bin/pytest tests/invariants/test_db.py -k lock_row -v
 

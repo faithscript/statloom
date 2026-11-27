@@ -1,29 +1,31 @@
 # Component 1: Core Data Model — File Architecture
 
+**Status: 🚧 in progress.** ✅ = built and tested, ⬜ = planned, not built yet.
+
 ```
 core/
 ├── db/
-│   ├── session.py        # engine + session factory, UTC enforcement
-│   └── base.py           # declarative base, shared mixins (timestamps)
-├── models/
+│   ├── session.py        # ✅ engine + session factory, UTC enforcement
+│   └── base.py           # ✅ declarative base, shared mixins (timestamps), trigger-attach helpers
+├── models/               # ⬜ not built yet
 │   ├── connection.py
 │   ├── metric.py         # metric + metric_version
 │   ├── engine.py         # engine + engine_version
 │   ├── job.py
 │   └── result.py
-├── schemas/              # Pydantic: validated shapes in/out of the model layer
+├── schemas/              # ⬜ Pydantic: validated shapes in/out of the model layer
 │   ├── job.py
 │   └── ...
-├── services/
+├── services/             # ⬜ not built yet
 │   ├── versioning.py     # register new immutable versions
 │   ├── job_submission.py # create job, pin versions, compute hash
 │   ├── job_state.py      # state machine, claim, retry, lease
 │   └── result_store.py   # atomic result write + job success
-├── security/
+├── security/             # ⬜ not built yet
 │   └── secrets.py        # encrypt/decrypt connection credentials
-└── migrations/           # Alembic
+└── migrations/           # ✅ Alembic (0001: trigger functions)
 tests/
-└── invariants/           # one test file per service/model group
+└── invariants/           # ✅ test_db.py so far; one test file per service/model group
 ```
 
 ## Dependency Flow
