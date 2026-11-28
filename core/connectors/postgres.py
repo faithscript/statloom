@@ -2,7 +2,7 @@
 
 Navigation:
   PostgresConfig         validated connection settings (unknown fields rejected)
-  translate_params       `:name` placeholders -> psycopg binds, SQL-aware scanner
+  translate_params       `:name` placeholders -> psycopg binds (uses sqlscan.scan)
   PostgresConnector      open / close / run_query / validate
   _translate_error       psycopg exceptions -> typed ConnectorErrors (secret redacted)
 
@@ -12,7 +12,6 @@ Read-only has layers (defense in depth), strongest first:
   3. every query runs inside a DECLARE ... CURSOR, which accepts one SELECT-like
      statement only, so multi-statement and DDL/DML payloads are rejected outright
 """
-import re
 import uuid
 from typing import Any, Mapping
 
@@ -23,9 +22,8 @@ from core.connectors.base import Connector, QueryResult
 from core.connectors.errors import (AuthenticationFailed, ConnectionFailed, ConnectorError,
                                     QueryRejected, QueryTimeout, ResultTooLarge, redact)
 from core.connectors.registry import register
+from core.connectors.sqlscan import scan
 
-_NAME = re.compile(r"[A-Za-z_]\w*")
-_DOLLAR_TAG = re.compile(r"\$[A-Za-z_]*\$")
 
 
 class PostgresConfig(BaseModel):
@@ -41,60 +39,18 @@ class PostgresConfig(BaseModel):
 def translate_params(sql: str) -> tuple[str, list[str]]:
     """Convert `:name` placeholders to psycopg's `%(name)s` and return the names used.
 
-    Skips string literals, quoted identifiers, comments, dollar-quoted bodies, and
-    `::` casts. Literal `%` is doubled so psycopg doesn't treat it as a placeholder.
-    Values are never formatted into the text: they are bound by the driver.
-    Known limit: array slices like `a[x:y]` with a name after the colon look like a param.
+    Placeholder discovery is the shared scanner in sqlscan.py. Literal `%` is doubled
+    so psycopg doesn't treat it as a placeholder. Values are never formatted into
+    the text: they are bound by the driver.
     """
     out: list[str] = []
     names: list[str] = []
-    i, n = 0, len(sql)
-    while i < n:
-        c = sql[i]
-        if c in ("'", '"'):  # string literal or quoted identifier ('' / "" escapes)
-            j = i + 1
-            while j < n:
-                if sql[j] == c:
-                    if j + 1 < n and sql[j + 1] == c:
-                        j += 2
-                        continue
-                    break
-                j += 1
-            out.append(sql[i : j + 1].replace("%", "%%"))
-            i = j + 1
-        elif sql.startswith("--", i):
-            j = sql.find("\n", i)
-            j = n if j == -1 else j
-            out.append(sql[i:j].replace("%", "%%"))
-            i = j
-        elif sql.startswith("/*", i):
-            j = sql.find("*/", i + 2)
-            j = n if j == -1 else j + 2
-            out.append(sql[i:j].replace("%", "%%"))
-            i = j
-        elif c == "$" and (m := _DOLLAR_TAG.match(sql, i)):
-            tag = m.group()
-            j = sql.find(tag, m.end())
-            j = n if j == -1 else j + len(tag)
-            out.append(sql[i:j].replace("%", "%%"))
-            i = j
-        elif c == ":":
-            if sql.startswith("::", i):
-                out.append("::")
-                i += 2
-            elif m := _NAME.match(sql, i + 1):
-                names.append(m.group())
-                out.append(f"%({m.group()})s")
-                i = m.end()
-            else:
-                out.append(":")
-                i += 1
-        elif c == "%":
-            out.append("%%")
-            i += 1
+    for is_ph, text in scan(sql):
+        if is_ph:
+            names.append(text)
+            out.append(f"%({text})s")
         else:
-            out.append(c)
-            i += 1
+            out.append(text.replace("%", "%%"))
     return "".join(out), names
 
 
