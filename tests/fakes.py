@@ -46,3 +46,54 @@ class FakeConnector(Connector):
 
     def validate(self) -> None:
         pass
+
+
+# --- fake engines (Component 4) ---------------------------------------------
+# A simple correct engine, plus a factory for deliberately bad ones. Registered at
+# runtime by tests only (never imported by core), like FakeConnector above.
+import math  # noqa: E402
+
+from core.engines import (CONTRACT_VERSION, Comparison, Engine, EngineInput,  # noqa: E402
+                          EngineOutput)
+from core.metrics.contract import MetricType  # noqa: E402
+
+
+class FakeEngineParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+def mean_difference(inp: EngineInput, **overrides) -> EngineOutput:
+    """A deliberately naive but valid result: difference of means, crude SE, fixed p."""
+    out = []
+    c = inp.samples[inp.control_variant]
+    for variant, xs in inp.samples.items():
+        if variant == inp.control_variant:
+            continue
+        mc, mt = sum(c) / len(c), sum(xs) / len(xs)
+        se = 1.0 / math.sqrt(len(c) + len(xs))
+        fields = dict(control=inp.control_variant, treatment=variant, n_control=len(c),
+                      n_treatment=len(xs), mean_control=mc, mean_treatment=mt, effect=mt - mc,
+                      effect_se=se, ci_lower=mt - mc - 2 * se, ci_upper=mt - mc + 2 * se,
+                      confidence_level=0.95, p_value=0.5, method="fake_mean_difference")
+        fields.update(overrides)
+        out.append(Comparison.model_construct(**fields) if overrides else Comparison(**fields))
+    return EngineOutput.model_construct(contract_version=CONTRACT_VERSION, comparisons=tuple(out)) \
+        if overrides else EngineOutput(contract_version=CONTRACT_VERSION, comparisons=tuple(out))
+
+
+class FakeEngine(Engine):
+    name = "fake_mean_difference"
+    version = "0.1"
+    supports = frozenset({MetricType.CONTINUOUS, MetricType.PROPORTION})
+    params_model = FakeEngineParams
+
+    def run(self, inp: EngineInput) -> EngineOutput:
+        return mean_difference(inp)
+
+
+def bad_engine(label: str, produce) -> type[Engine]:
+    """An engine class whose run() returns `produce(inp)` (any value, valid or not)."""
+    return type(f"Bad_{label}", (Engine,), {
+        "name": f"bad_{label}", "version": "0.1",
+        "supports": frozenset({MetricType.CONTINUOUS, MetricType.PROPORTION}),
+        "params_model": FakeEngineParams, "run": lambda self, inp: produce(inp)})

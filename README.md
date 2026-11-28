@@ -16,7 +16,7 @@ Statloom separates this infrastructure from the analysis itself, allowing teams 
 
 - **Database extensibility:** a connector interface with PostgreSQL as the first provider and read-only, encrypted credentials.
 - **Metrics as code:** parameterized SQL templates written against the user's own schema. *Built:* template and parameter validation, rendering to bound parameters, and a content hash. *Planned:* storing immutable, numbered versions in Postgres.
-- **Pluggable statistical engines:** custom Python engines behind a standard input/output contract, plus a reference engine for continuous and proportional metrics.
+- **Pluggable statistical engines:** custom Python engines behind a standard input/output contract, plus a reference engine for continuous and proportional metrics. *Built:* the contract, input and output validation, an engine registry, and the reference engine. *Planned:* storing immutable engine versions in Postgres.
 - **Distributed execution:** asynchronous jobs through Kafka, concurrent workers on Kubernetes, with retries and duplicate-safe processing.
 - **Traceable analysis:** every result traces back to the exact metric version, engine version, connection, and parameters that produced it.
 
@@ -30,7 +30,7 @@ Client([Client])
 API["REST API<br/>(planned)"]
 K[["Kafka<br/>(planned)"]]
 W["Worker x N<br/>(planned)"]
-ENG["Statistical engine<br/>(planned)"]
+ENG["Statistical engine<br/>(built)"]
 MET["Metric templates<br/>(built)"]
 CONN["Connector layer<br/>(built)"]
 UDB[("User database<br/>read-only")]
@@ -51,8 +51,8 @@ DB --> PG
 
 classDef built fill:#d4edda,stroke:#2e7d32,color:#000
 classDef planned fill:#fff3cd,stroke:#b58900,color:#000
-class CONN,DB,MET built
-class API,K,W,ENG,PG planned
+class CONN,DB,MET,ENG built
+class API,K,W,PG planned
 ```
 
 Workers claim jobs, render the metric template into a query, fetch metric data through a connector, run the selected engine, and write the result and job status in a single transaction.
@@ -74,12 +74,12 @@ Workers claim jobs, render the metric template into a query, fetch metric data t
 | Persistence | PostgreSQL, SQLAlchemy 2.x, Alembic | Jobs, results, registries, migrations |
 | Metric templates | Jinja2 (sandboxed) | Optional `{% if %}` blocks in SQL templates; values are never rendered into the SQL |
 | Messaging | Apache Kafka (KRaft, single node locally) | Asynchronous job distribution |
-| Statistics | NumPy, SciPy, pandas | Reference engine |
+| Statistics | NumPy, SciPy | Reference engine (Welch t-test, two-proportion z-test) |
 | Secrets | `cryptography` (Fernet) | Encrypted connection credentials |
 | Packaging | Docker | One image per service |
 | Orchestration | Kubernetes (local cluster) | Worker replicas and recovery |
 
-SQLAlchemy, psycopg, Alembic, Pydantic, Jinja2, and pytest are in use today. The rest is planned.
+SQLAlchemy, psycopg, Alembic, Pydantic, Jinja2, NumPy, SciPy, and pytest are in use today. The rest is planned.
 
 ## Development Status
 
@@ -90,7 +90,7 @@ SQLAlchemy, psycopg, Alembic, Pydantic, Jinja2, and pytest are in use today. The
 | 1 | Core data model | 🚧 In progress: `core/db` done; models, services, and security pending |
 | 2 | Database connector layer | ✅ Built: interface, registry, and PostgreSQL provider |
 | 3 | Metric registry | 🚧 In progress: template validation, rendering, and the shared SQL scanner built; storing versions waits on Component 1 |
-| 4 | Statistical engine interface and reference engine | ⬜ Planned |
+| 4 | Statistical engine interface and reference engine | 🚧 In progress: contract, validation, registry, and reference engine built; storing engine versions waits on Component 1 |
 | 5 | REST API | ⬜ Planned |
 | 6 | Worker service | ⬜ Planned |
 | 7 | Infrastructure (Docker, Kubernetes, logging) | ⬜ Planned |
@@ -104,7 +104,9 @@ SQLAlchemy, psycopg, Alembic, Pydantic, Jinja2, and pytest are in use today. The
 
 `core/metrics` provides typed, bounded metric parameters, a sandboxed template validator that allows only `{% if %}` blocks around literal SQL (no value output, calls, loops, or includes), a renderer that returns SQL plus a separate bind dict, a content hash for each definition, and an output-column contract. It is covered by 65 invariant tests, one of which runs a rendered query through the real PostgreSQL connector. Storing metric versions in Postgres is not built yet.
 
-In total 118 tests pass.
+`core/engines` defines one input and output contract for every statistical engine, an engine registry, and a runner that validates the data going in and the result coming out (a buggy custom engine fails one job instead of storing a wrong number). The reference engine compares each treatment with the control using Welch's t-test for continuous metrics and a two-proportion z-test for proportions, reporting the effect, standard error, confidence interval, and p-value. It is covered by 72 invariant tests: results are checked against SciPy and hand calculations, plus seeded simulations of error rates. One test runs a rendered metric through the real connector into the engine. Storing engine versions in Postgres is not built yet.
+
+In total 190 tests pass.
 
 ### Example: a parameterized metric
 
@@ -133,6 +135,24 @@ q = render(sql, specs, {"experiment_id": "exp_42", "start_date": "2025-01-01"})
 
 The query must return a `variant` and a `value` column (optional `unit_id`). Without a segment, the filter and its parameter are dropped.
 
+### Example: running an engine
+
+Every engine consumes the same validated input and returns the same validated output. The runner checks the data going in and the result coming out.
+
+```python
+from core.engines import PinnedEngine, create_engine, run_engine, to_json
+from core.metrics import MetricType
+
+rows = [("control", 10.0), ("control", 12.0), ("control", 11.5),
+        ("treatment", 13.0), ("treatment", 14.5), ("treatment", 12.5)]
+engine = create_engine("reference")
+result = run_engine(engine, PinnedEngine("reference", engine.version), MetricType.CONTINUOUS,
+                    ("variant", "value"), rows, control_variant="control")
+print(to_json(result))   # effect, standard error, confidence interval, p-value
+```
+
+A custom engine is a class that declares its name, version, supported metric types, and parameters, implements `run`, and is registered with `@register("name")`. No core code changes.
+
 ## Getting Started
 
 **Prerequisites:** Python 3.11+ and a local PostgreSQL installation (`initdb` and `pg_ctl` on your `PATH`), or a Postgres server you can create and drop databases on.
@@ -142,7 +162,7 @@ git clone https://github.com/faithscript/statloom.git
 cd statloom
 
 python3 -m venv .venv
-.venv/bin/pip install "sqlalchemy>=2" "psycopg[binary]>=3" alembic pydantic jinja2 pytest
+.venv/bin/pip install "sqlalchemy>=2" "psycopg[binary]>=3" alembic pydantic jinja2 numpy scipy pytest
 
 # run all tests (starts and stops a throwaway local Postgres automatically)
 .venv/bin/pytest -q
@@ -152,6 +172,7 @@ python3 -m venv .venv
 .venv/bin/pytest tests/invariants/test_db.py -k lock_row -v
 .venv/bin/pytest tests/invariants/test_connectors.py -v
 .venv/bin/pytest tests/invariants/test_metrics.py -v
+.venv/bin/pytest tests/invariants/test_engines.py -v
 
 # or use your own Postgres
 TEST_PG_URL="postgresql+psycopg://user:pass@localhost:5432/postgres" .venv/bin/pytest -q
