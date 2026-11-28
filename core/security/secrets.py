@@ -3,6 +3,7 @@
 Navigation:
   SecretsConfigError / SecretDecryptionError   typed failures (never carry a key, token, or secret)
   load_keys     read STATLOOM_SECRET_KEY: one or more comma-separated Fernet keys
+  check_secret_key   startup check: raise now (not at first use) if the key is missing or malformed
   encrypt       plaintext -> token, using the FIRST key
   decrypt       token -> masked SecretStr, trying every key
 
@@ -52,3 +53,10 @@ def decrypt(token: str) -> SecretStr:
         return SecretStr(MultiFernet(load_keys()).decrypt(token.encode()).decode())
     except InvalidToken:
         raise SecretDecryptionError("stored credential could not be decrypted") from None
+
+
+def check_secret_key() -> int:
+    """Startup validation. Call where the services are wired (the API's create_app with a database):
+    a missing or malformed key then stops startup instead of surfacing on the first encrypt or
+    decrypt. Returns the number of keys configured. The message names the variable, never a key."""
+    return len(load_keys())

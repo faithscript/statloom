@@ -14,7 +14,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Sequence
 
-from sqlalchemy import select, text
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from core.metrics import MetricType, ParamSpec, content_hash, validate_template
@@ -33,12 +34,13 @@ class RenderableMetric:
 
 
 def create_metric(session: Session, name: str) -> Metric:
-    if session.scalar(select(Metric.id).where(Metric.name == name)) is not None:
+    """One atomic INSERT ... ON CONFLICT DO NOTHING: of two concurrent creations of one name,
+    exactly one succeeds and the other raises AlreadyExists (never an integrity error)."""
+    new_id = session.execute(pg_insert(Metric).values(name=name)
+                             .on_conflict_do_nothing(index_elements=[Metric.name]).returning(Metric.id)).scalar()
+    if new_id is None:
         raise AlreadyExists("a metric with this name already exists")
-    metric = Metric(name=name)
-    session.add(metric)
-    session.flush()
-    return metric
+    return session.get(Metric, new_id, populate_existing=True)
 
 
 def register_metric_version(session: Session, metric_id: uuid.UUID, sql: str,
@@ -66,3 +68,11 @@ def load_renderable(session: Session, metric_version_id: uuid.UUID) -> Renderabl
         version_id=v.id, sql_template=v.sql_template,
         specs=tuple(ParamSpec.model_validate(s) for s in v.param_spec),
         metric_type=MetricType(v.metric_type), content_hash=v.content_hash)
+
+
+def get_metric_version(session: Session, metric_id: uuid.UUID, version_number: int) -> MetricVersion:
+    v = session.scalars(select(MetricVersion).where(MetricVersion.metric_id == metric_id,
+                                                    MetricVersion.version_number == version_number)).first()
+    if v is None:
+        raise NotFound("metric version not found")
+    return v

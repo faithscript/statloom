@@ -95,7 +95,7 @@ SQLAlchemy, psycopg, Alembic, Pydantic, Jinja2, NumPy, SciPy, `cryptography`, Fa
 | 2 | Database connector layer | ✅ Built: interface, registry, and PostgreSQL provider |
 | 3 | Metric registry | ✅ Built: template validation, rendering, the shared SQL scanner, and versioned storage |
 | 4 | Statistical engine interface and reference engine | ✅ Built: contract, validation, registry, reference engine, and versioned storage |
-| 5 | REST API | 🚧 In progress: foundation and metric validation endpoint built; registration and job endpoints are unblocked but not written; Kafka publishing waits on infrastructure |
+| 5 | REST API | ✅ Built at the API layer: registration, connections, job submit/status/result, and stateless metric validation, tested against real PostgreSQL with a fake publisher. Not yet wired: the real Kafka publisher and a database-backed Uvicorn configuration |
 | 6 | Worker service | ⬜ Planned |
 | 7 | Infrastructure (Docker, Kubernetes, logging) | ⬜ Planned |
 | 8 | Reference implementation and demo | ⬜ Planned |
@@ -110,11 +110,35 @@ SQLAlchemy, psycopg, Alembic, Pydantic, Jinja2, NumPy, SciPy, `cryptography`, Fa
 
 `core/engines` defines one input and output contract for every statistical engine, an engine registry, and a runner that validates the data going in and the result coming out (a buggy custom engine fails one job instead of storing a wrong number). The reference engine compares each treatment with the control using Welch's t-test for continuous metrics and a two-proportion z-test for proportions, reporting the effect, standard error, confidence interval, and p-value. It is covered by 72 invariant tests: results are checked against SciPy and hand calculations, plus seeded simulations of error rates. One test runs a rendered metric through the real connector into the engine.
 
-`core/models`, `core/services`, and `core/security` (migrations 0002 and 0003) are the persistence layer on PostgreSQL. Connections store credentials only as Fernet-encrypted tokens, and several keys can be configured so keys can be rotated. Metrics and engines have immutable versions numbered without gaps, even under concurrent registration; registering identical content returns the existing version. A job pins its metric version, engine version, connection, parameters, and a configuration hash, and is submitted with a client-supplied idempotency key through one atomic insert-or-find, so a retried request returns the original job and a reused key with a different request is rejected. The job lifecycle (claim, lease, heartbeat, reclaim, fail, requeue, complete) is made of compare-and-set operations fenced on a per-claim attempt counter: a worker whose lease expired and whose job was reclaimed can neither update the job nor store a result. The database itself enforces immutability, legal status transitions, and that a result exists exactly when its job has succeeded (checked at commit), so the rules hold even if code bypasses the services. It is covered by 103 invariant tests against real PostgreSQL, using real threads for the concurrency cases and raw SQL to prove the database rules, and by deliberate breakage of the code to confirm the tests notice. These are mechanisms, not a running system: there is no worker yet, so nothing claims or runs jobs, and no REST endpoint stores one.
+`core/models`, `core/services`, and `core/security` (migrations 0002 and 0003) are the persistence layer on PostgreSQL. Connections store credentials only as Fernet-encrypted tokens, and several keys can be configured so keys can be rotated. Metrics and engines have immutable versions numbered without gaps, even under concurrent registration; registering identical content returns the existing version. A job pins its metric version, engine version, connection, parameters, and a configuration hash, and is submitted with a client-supplied idempotency key through one atomic insert-or-find, so a retried request returns the original job and a reused key with a different request is rejected. The job lifecycle (claim, lease, heartbeat, reclaim, fail, requeue, complete) is made of compare-and-set operations fenced on a per-claim attempt counter: a worker whose lease expired and whose job was reclaimed can neither update the job nor store a result. The database itself enforces immutability, legal status transitions, and that a result exists exactly when its job has succeeded (checked at commit), so the rules hold even if code bypasses the services. It is covered by 103 invariant tests against real PostgreSQL, using real threads for the concurrency cases and raw SQL to prove the database rules, and by deliberate breakage of the code to confirm the tests notice. These are mechanisms, not a running system: there is no worker yet, so nothing claims or runs jobs, and the REST API stores a job but nothing executes it.
 
-`core/api` is the REST API's foundation, built with FastAPI. Every failure uses one error format with a stable code and no echoed values; requests are size-limited and unknown fields are rejected; each request carries an id used in responses and logs; and the access log records only method, path, and status. `GET /healthz` reports the process is alive and `GET /readyz` reports whether Postgres is reachable and the schema is current. `POST /v1/metrics/validate` is a stateless dry run: it checks a metric template, returns its content hash, and, given sample values, shows the exact SQL and bound parameters a worker would run, without touching a database. It is covered by 39 invariant tests (including deliberate breakage of the API to confirm the tests notice). **Not built yet:** registering connections, metrics, and engines; submitting jobs and fetching status and results; and publishing to Kafka. The database services they need now exist; the endpoints are not written yet, and Kafka publishing waits on the local infrastructure (Component 7).
+`core/api` is the REST API, built with FastAPI. It is complete at the API layer: every endpoint below exists and is tested against real PostgreSQL, with a recording fake standing in for Kafka. Every failure uses one error format with a stable code and no echoed values; requests are size-limited and unknown fields are rejected; each request carries an id used in responses and logs; and the access log records only method, path, and status. A connection's secret is write-only and never appears in a response, error, log, or the OpenAPI schema.
 
-In total 332 tests pass: 14 database, 39 connector, 65 metric, 72 engine, 39 API, and 103 persistence and security.
+| Endpoint | Behavior |
+|---|---|
+| `GET /healthz`, `GET /readyz` | Liveness, and readiness (Postgres reachable and schema current; 503 otherwise) |
+| `POST /v1/metrics/validate` | Stateless dry run: checks a template, returns its content hash and the SQL and bound parameters a worker would run; touches no database |
+| `POST /v1/connections`, `GET /v1/connections/{id}` | Registers a connection (config checked, never connected to; secret encrypted) and reads it back without the secret. Connections are immutable |
+| `POST /v1/metrics`, `POST /v1/metrics/{id}/versions`, `GET /v1/metrics/{id}/versions/{n}` | Registers a metric and its immutable versions; identical content returns the existing version; a duplicate name is a 409 |
+| `POST /v1/engines`, `POST /v1/engines/{id}/versions`, `GET /v1/engines/{id}/versions/{n}` | The same for engines; the engine's declaration is validated |
+| `POST /v1/jobs` | Requires an `Idempotency-Key` header. Validates parameters, engine support for the metric type, and engine parameters before storing anything, commits the job as `queued`, then publishes its id. Answers **202**. The same key and same request returns the original job (header `Idempotent-Replayed: true`, no second publish); the same key with a different request is a 409 |
+| `GET /v1/jobs/{id}` | Job status |
+| `GET /v1/jobs/{id}/result` | The result with its traceability record; 409 `result_not_ready` while `queued` or `running`, 409 `job_failed` after a failure |
+
+**What this is and is not.** A 202 means the job is recorded in Postgres, not that anything is running it. The API stores jobs and answers questions about them; it never runs an analysis or connects to a user's database. There is no worker yet, so a submitted job stays `queued`. This is the implemented API, not an operating distributed system.
+
+**Not wired yet:**
+- **The real Kafka publisher.** Only the `JobPublisher` interface exists; tests use a recording fake. With no publisher configured, a submit still stores the job. Component 7's local Kafka comes first.
+- **A database-backed Uvicorn configuration.** `create_app` accepts a session factory, but nothing builds one from configuration, so the run command below serves only the stateless endpoints and `/readyz` returns 503.
+- **Recovery from the dual-write gap (Q1).** If the process dies, or publishing fails, after the job is committed, the job stays `queued` with no message. This is deliberately visible and documented; the recovery mechanism is decided in Component 6.
+
+**Security assumption: trusted network only.** V1 has no authentication, authorization, or rate limiting (Q15). Anyone who can reach the API can register metrics and connections, submit jobs, and read results. Do not expose it beyond a trusted network.
+
+With a database configured, `create_app` validates `STATLOOM_SECRET_KEY` at startup and refuses to start if it is missing or malformed (it names the variable, never the key).
+
+The API is covered by 63 invariant tests (39 for the foundation and validation endpoint, 24 for registration, connections, and jobs), including the secret never leaving the system, commit-before-publish checked from a second database connection, a failed publish leaving the job stored, and 12 simultaneous identical submits producing one job and one publish. Deliberate breakage of the API (18 mutations in all) confirmed the tests notice.
+
+In total 357 tests pass: 14 database, 39 connector, 65 metric, 72 engine, 63 API, and 104 persistence and security.
 
 ### Example: a parameterized metric
 
@@ -217,7 +241,7 @@ curl -s -X POST localhost:8000/v1/metrics/validate -H 'content-type: application
 }'
 ```
 
-`/readyz` returns 503 until the app is given a database. Wiring a database, and configuring logging, is part of the pending work.
+`/readyz` returns 503 until the app is given a database. The registration and job endpoints are registered only when the app has a database, and that wiring (plus logging configuration) is pending work.
 
 ## Roadmap
 

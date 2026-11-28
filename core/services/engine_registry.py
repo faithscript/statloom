@@ -14,6 +14,7 @@ Never commits.
 import uuid
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from core.engines import CONTRACT_VERSION, Engine as EngineBase, PinnedEngine, validate_engine
@@ -24,12 +25,12 @@ from core.services.versioning import latest_version
 
 
 def create_engine_entry(session: Session, name: str) -> Engine:
-    if session.scalar(select(Engine.id).where(Engine.name == name)) is not None:
+    """Atomic insert-or-fail on the unique name (see create_metric)."""
+    new_id = session.execute(pg_insert(Engine).values(name=name)
+                             .on_conflict_do_nothing(index_elements=[Engine.name]).returning(Engine.id)).scalar()
+    if new_id is None:
         raise AlreadyExists("an engine with this name already exists")
-    engine = Engine(name=name)
-    session.add(engine)
-    session.flush()
-    return engine
+    return session.get(Engine, new_id, populate_existing=True)
 
 
 def register_engine_version(session: Session, engine_id: uuid.UUID, engine_name: str) -> tuple[EngineVersion, bool]:
@@ -53,3 +54,11 @@ def load_pinned(session: Session, engine_version_id: uuid.UUID) -> tuple[EngineB
     if v is None:
         raise NotFound("engine version not found")
     return create_engine(v.engine_name), PinnedEngine(v.engine_name, v.declared_version, v.contract_version)
+
+
+def get_engine_version(session: Session, engine_id: uuid.UUID, version_number: int) -> EngineVersion:
+    v = session.scalars(select(EngineVersion).where(EngineVersion.engine_id == engine_id,
+                                                    EngineVersion.version_number == version_number)).first()
+    if v is None:
+        raise NotFound("engine version not found")
+    return v

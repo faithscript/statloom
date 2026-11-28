@@ -35,6 +35,13 @@ SPEC_A = {"name": "a", "type": "string"}
 GOOD = {"sql_template": "SELECT :a", "metric_type": "continuous", "parameters": [SPEC_A]}
 
 
+@pytest.fixture(autouse=True)
+def secret_key(monkeypatch):
+    """An app given a database validates the encryption key at startup (see test_api_phase_b.py)."""
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv("STATLOOM_SECRET_KEY", Fernet.generate_key().decode())
+
+
 @pytest.fixture
 def client():
     return TestClient(create_app(), raise_server_exceptions=False)

@@ -8,7 +8,8 @@ import pytest
 from cryptography.fernet import Fernet
 from pydantic import SecretStr
 
-from core.security import SecretDecryptionError, SecretsConfigError, decrypt, encrypt, load_keys
+from core.security import (SecretDecryptionError, SecretsConfigError, check_secret_key, decrypt, encrypt,
+                           load_keys)
 from core.security.secrets import ENV_VAR
 
 SECRET = "correct-horse-battery-staple-7731"
@@ -83,3 +84,16 @@ def test_rotation_new_first_key_old_key_still_decrypts(monkeypatch):
     assert decrypt(new_token).get_secret_value() == SECRET          # new tokens use the new key
     with pytest.raises(SecretDecryptionError):
         decrypt(old_token)                                          # old tokens need the old key
+
+
+def test_startup_check_counts_keys_and_fails_before_first_use(monkeypatch):
+    a, b = Fernet.generate_key().decode(), Fernet.generate_key().decode()
+    monkeypatch.setenv(ENV_VAR, f"{a},{b}")
+    assert check_secret_key() == 2
+    monkeypatch.delenv(ENV_VAR)
+    with pytest.raises(SecretsConfigError, match=ENV_VAR):
+        check_secret_key()
+    monkeypatch.setenv(ENV_VAR, f"{a},not-a-key-secret-looking")
+    with pytest.raises(SecretsConfigError) as e:
+        check_secret_key()
+    assert "not-a-key-secret-looking" not in str(e.value) and a not in str(e.value)

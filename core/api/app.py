@@ -6,8 +6,11 @@ Navigation:
 
 The guard (one middleware) gives every request an id, bounds the body, and writes an
 access log of method, path, status, and duration only: never bodies, query strings, or
-headers. Routes that need Postgres are registered only when a session factory is given,
-so the stateless parts work (and are testable) with no database or Kafka.
+headers. Routes that need Postgres (connections, metric and engine registration, jobs) are
+registered only when a session factory is given, so the stateless parts work (and are testable)
+with no database or Kafka. Giving a session factory also validates the encryption key at startup:
+a missing or malformed STATLOOM_SECRET_KEY raises SecretsConfigError from create_app, naming the
+variable, never the key. Without a publisher, a submitted job is stored and stays `queued`.
 """
 import logging
 import re
@@ -20,7 +23,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from core.api.errors import ErrorOut, error_response, install_handlers
 from core.api.publisher import JobPublisher
-from core.api.routes import health, metrics
+from core.api.routes import connections, engines, health, jobs, metrics
+from core.security import check_secret_key
 
 access_log = logging.getLogger("statloom.api.access")
 _REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,64}\Z")
@@ -36,6 +40,8 @@ class ApiDeps:
 
 def create_app(deps: ApiDeps | None = None) -> FastAPI:
     deps = deps or ApiDeps()
+    if deps.session_factory is not None:
+        check_secret_key()          # fail at startup, not on the first encrypt or decrypt
     app = FastAPI(title="Statloom API", version="0.1.0",
                   responses={422: {"model": ErrorOut}, 500: {"model": ErrorOut}})
     app.state.deps = deps
@@ -66,4 +72,9 @@ def create_app(deps: ApiDeps | None = None) -> FastAPI:
 
     app.include_router(health.make_router(deps))
     app.include_router(metrics.router)
+    if deps.session_factory is not None:
+        app.include_router(connections.router)
+        app.include_router(metrics.registration_router)
+        app.include_router(engines.router)
+        app.include_router(jobs.router)
     return app

@@ -18,11 +18,13 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from sqlalchemy.exc import OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from core.connectors import ConfigInvalid, UnknownConnectorType
 from core.engines import EngineDeclarationInvalid, UnknownEngine
 from core.metrics import MetricError, ParameterInvalid, TemplateInvalid
+from core.services.errors import AlreadyExists, IdempotencyConflict, NotFound
 
 log = logging.getLogger("statloom.api")
 
@@ -50,6 +52,9 @@ _TYPED: list[tuple[type[Exception], int, str]] = [
     (MetricError, 422, "metric_invalid"),
     (UnknownEngine, 422, "engine_invalid"),
     (EngineDeclarationInvalid, 422, "engine_invalid"),
+    (NotFound, 404, "not_found"),
+    (AlreadyExists, 409, "already_exists"),
+    (IdempotencyConflict, 409, "idempotency_conflict"),
     (ConfigInvalid, 422, "connection_config_invalid"),
     (UnknownConnectorType, 422, "connection_config_invalid"),
 ]
@@ -88,6 +93,11 @@ def install_handlers(app: FastAPI) -> None:
 
     for cls, _status, _code in _TYPED:
         app.add_exception_handler(cls, _typed)
+
+    @app.exception_handler(OperationalError)
+    async def _database_down(request: Request, exc: OperationalError):
+        log.error("database unavailable rid=%s", getattr(request.state, "request_id", "?"))
+        return error_response(request, 503, "service_unavailable", "database unavailable")
 
     @app.exception_handler(Exception)
     async def _unexpected(request: Request, exc: Exception):
