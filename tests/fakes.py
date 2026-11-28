@@ -97,3 +97,23 @@ def bad_engine(label: str, produce) -> type[Engine]:
         "name": f"bad_{label}", "version": "0.1",
         "supports": frozenset({MetricType.CONTINUOUS, MetricType.PROPORTION}),
         "params_model": FakeEngineParams, "run": lambda self, inp: produce(inp)})
+
+
+# --- recording publisher (Component 5) ------------------------------------------
+from core.api import PublishFailed  # noqa: E402
+
+
+class RecordingPublisher:
+    """Implements JobPublisher. Records job ids, can be told to fail, and can run a callback
+    at publish time (Phase B uses it to record what the database showed at that moment)."""
+
+    def __init__(self, fail: bool = False, on_publish=None):
+        self.published: list[str] = []
+        self.fail, self.on_publish = fail, on_publish
+
+    def publish(self, job_id: str) -> None:
+        if self.on_publish:
+            self.on_publish(job_id)
+        if self.fail:
+            raise PublishFailed()
+        self.published.append(job_id)

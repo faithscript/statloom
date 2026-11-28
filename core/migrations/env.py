@@ -5,6 +5,7 @@ from alembic import context
 from sqlalchemy import create_engine
 
 from core.db.base import Base
+import core.models  # noqa: F401  (registers every table on Base.metadata)
 
 target_metadata = Base.metadata
 

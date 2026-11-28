@@ -185,6 +185,7 @@ def test_forbid_mutation_blocks_update_and_delete(widget_db):
 
 # --- migrations match models -----------------------------------------
 def test_migrated_schema_matches_models(db_url):
+    import core.models  # noqa: F401  (registers every table on Base.metadata)
     engine = create_engine(db_url)
     with engine.connect() as conn:
         diff = compare_metadata(MigrationContext.configure(conn), Base.metadata)

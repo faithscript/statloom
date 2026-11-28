@@ -14,28 +14,30 @@ Statloom separates this infrastructure from the analysis itself, allowing teams 
 
 *Planned for V1 unless marked otherwise.*
 
-- **Database extensibility:** a connector interface with PostgreSQL as the first provider and read-only, encrypted credentials.
-- **Metrics as code:** parameterized SQL templates written against the user's own schema. *Built:* template and parameter validation, rendering to bound parameters, and a content hash. *Planned:* storing immutable, numbered versions in Postgres.
-- **Pluggable statistical engines:** custom Python engines behind a standard input/output contract, plus a reference engine for continuous and proportional metrics. *Built:* the contract, input and output validation, an engine registry, and the reference engine. *Planned:* storing immutable engine versions in Postgres.
+- **Database extensibility:** a connector interface with PostgreSQL as the first provider and read-only access. Credentials are stored only as encrypted tokens (built).
+- **Metrics as code:** parameterized SQL templates written against the user's own schema. *Built:* template and parameter validation, rendering to bound parameters, and a content hash. Versions are stored immutably and numbered without gaps (built).
+- **Pluggable statistical engines:** custom Python engines behind a standard input/output contract, plus a reference engine for continuous and proportional metrics. *Built:* the contract, input and output validation, an engine registry, and the reference engine. Engine versions are stored immutably, with the same numbering (built).
+- **Persistence and job lifecycle:** jobs pin exact versions and parameters, are submitted idempotently, and move through a database-enforced state machine with leases and fencing so a stale worker cannot overwrite the current owner. *Built:* the storage, rules, and services. *Planned:* the workers that use them.
 - **Distributed execution:** asynchronous jobs through Kafka, concurrent workers on Kubernetes, with retries and duplicate-safe processing.
+- **Job submission API:** a REST API to register connections, metrics, and engines, submit jobs, and fetch results, publishing job ids to Kafka. *Built:* the API foundation (one error format, request limits and ids, health and readiness checks) and a stateless endpoint that validates and previews a metric template. *Planned:* registration, job submit, status and result endpoints, and the Kafka publisher.
 - **Traceable analysis:** every result traces back to the exact metric version, engine version, connection, and parameters that produced it.
 
 ## System Architecture
 
-Green is built, yellow is planned, and the dashed edge marks an open design decision.
+Green is built, blue is partly built, yellow is planned, and the dashed edge marks an open design decision.
 
 ```mermaid
 flowchart TD
 Client([Client])
-API["REST API<br/>(planned)"]
+API["REST API<br/>(partly built)"]
 K[["Kafka<br/>(planned)"]]
 W["Worker x N<br/>(planned)"]
 ENG["Statistical engine<br/>(built)"]
 MET["Metric templates<br/>(built)"]
 CONN["Connector layer<br/>(built)"]
 UDB[("User database<br/>read-only")]
-DB["core/db<br/>(built)"]
-PG[("Statloom Postgres<br/>registries, jobs, results<br/>(tables planned)")]
+DB["Persistence layer<br/>(built)"]
+PG[("Statloom Postgres<br/>registries, jobs, results<br/>(built)")]
 
 Client -->|"Submit / Poll / Fetch"| API
 API -->|"1. Store job"| DB
@@ -50,9 +52,11 @@ W -->|"7. Save result and status"| DB
 DB --> PG
 
 classDef built fill:#d4edda,stroke:#2e7d32,color:#000
+classDef partial fill:#d6eaf8,stroke:#2874a6,color:#000
 classDef planned fill:#fff3cd,stroke:#b58900,color:#000
-class CONN,DB,MET,ENG built
-class API,K,W,PG planned
+class CONN,DB,MET,ENG,PG built
+class API partial
+class K,W planned
 ```
 
 Workers claim jobs, render the metric template into a query, fetch metric data through a connector, run the selected engine, and write the result and job status in a single transaction.
@@ -70,16 +74,16 @@ Workers claim jobs, render the metric template into a query, fetch metric data t
 | Area | Choice | Responsibility |
 |---|---|---|
 | Language | Python | Core services and statistical engines |
-| API | FastAPI, Pydantic | REST interface, request and engine contracts |
-| Persistence | PostgreSQL, SQLAlchemy 2.x, Alembic | Jobs, results, registries, migrations |
+| API | FastAPI, Pydantic, Uvicorn | REST interface, request and engine contracts (Uvicorn serves the app) |
+| Persistence | PostgreSQL, SQLAlchemy 2.x, Alembic | Versioned registries, jobs, results, migrations; invariants enforced by constraints and triggers |
 | Metric templates | Jinja2 (sandboxed) | Optional `{% if %}` blocks in SQL templates; values are never rendered into the SQL |
 | Messaging | Apache Kafka (KRaft, single node locally) | Asynchronous job distribution |
 | Statistics | NumPy, SciPy | Reference engine (Welch t-test, two-proportion z-test) |
-| Secrets | `cryptography` (Fernet) | Encrypted connection credentials |
+| Secrets | `cryptography` (Fernet) | Encrypted connection credentials, with key rotation |
 | Packaging | Docker | One image per service |
 | Orchestration | Kubernetes (local cluster) | Worker replicas and recovery |
 
-SQLAlchemy, psycopg, Alembic, Pydantic, Jinja2, NumPy, SciPy, and pytest are in use today. The rest is planned.
+SQLAlchemy, psycopg, Alembic, Pydantic, Jinja2, NumPy, SciPy, `cryptography`, FastAPI, Uvicorn, HTTPX (the API test client), and pytest are in use today. The rest is planned.
 
 ## Development Status
 
@@ -87,11 +91,11 @@ SQLAlchemy, psycopg, Alembic, Pydantic, Jinja2, NumPy, SciPy, and pytest are in 
 
 | # | Component | Status |
 |---|---|---|
-| 1 | Core data model | 🚧 In progress: `core/db` done; models, services, and security pending |
+| 1 | Core data model | ✅ Built: tables, migrations, services, credential encryption, and the job lifecycle with database-enforced rules |
 | 2 | Database connector layer | ✅ Built: interface, registry, and PostgreSQL provider |
-| 3 | Metric registry | 🚧 In progress: template validation, rendering, and the shared SQL scanner built; storing versions waits on Component 1 |
-| 4 | Statistical engine interface and reference engine | 🚧 In progress: contract, validation, registry, and reference engine built; storing engine versions waits on Component 1 |
-| 5 | REST API | ⬜ Planned |
+| 3 | Metric registry | ✅ Built: template validation, rendering, the shared SQL scanner, and versioned storage |
+| 4 | Statistical engine interface and reference engine | ✅ Built: contract, validation, registry, reference engine, and versioned storage |
+| 5 | REST API | 🚧 In progress: foundation and metric validation endpoint built; registration and job endpoints are unblocked but not written; Kafka publishing waits on infrastructure |
 | 6 | Worker service | ⬜ Planned |
 | 7 | Infrastructure (Docker, Kubernetes, logging) | ⬜ Planned |
 | 8 | Reference implementation and demo | ⬜ Planned |
@@ -102,11 +106,15 @@ SQLAlchemy, psycopg, Alembic, Pydantic, Jinja2, NumPy, SciPy, and pytest are in 
 
 `core/connectors` provides a provider-neutral connector interface, a registry, and a read-only PostgreSQL connector with query timeouts, a row cap, bound parameters, and typed, retry-classified errors. It is covered by 39 invariant tests, including a contract suite that runs the same checks against a fake provider and the Postgres one. Its `:name` placeholder scanner lives in `core/connectors/sqlscan.py` and is shared with the metric code.
 
-`core/metrics` provides typed, bounded metric parameters, a sandboxed template validator that allows only `{% if %}` blocks around literal SQL (no value output, calls, loops, or includes), a renderer that returns SQL plus a separate bind dict, a content hash for each definition, and an output-column contract. It is covered by 65 invariant tests, one of which runs a rendered query through the real PostgreSQL connector. Storing metric versions in Postgres is not built yet.
+`core/metrics` provides typed, bounded metric parameters, a sandboxed template validator that allows only `{% if %}` blocks around literal SQL (no value output, calls, loops, or includes), a renderer that returns SQL plus a separate bind dict, a content hash for each definition, and an output-column contract. It is covered by 65 invariant tests, one of which runs a rendered query through the real PostgreSQL connector.
 
-`core/engines` defines one input and output contract for every statistical engine, an engine registry, and a runner that validates the data going in and the result coming out (a buggy custom engine fails one job instead of storing a wrong number). The reference engine compares each treatment with the control using Welch's t-test for continuous metrics and a two-proportion z-test for proportions, reporting the effect, standard error, confidence interval, and p-value. It is covered by 72 invariant tests: results are checked against SciPy and hand calculations, plus seeded simulations of error rates. One test runs a rendered metric through the real connector into the engine. Storing engine versions in Postgres is not built yet.
+`core/engines` defines one input and output contract for every statistical engine, an engine registry, and a runner that validates the data going in and the result coming out (a buggy custom engine fails one job instead of storing a wrong number). The reference engine compares each treatment with the control using Welch's t-test for continuous metrics and a two-proportion z-test for proportions, reporting the effect, standard error, confidence interval, and p-value. It is covered by 72 invariant tests: results are checked against SciPy and hand calculations, plus seeded simulations of error rates. One test runs a rendered metric through the real connector into the engine.
 
-In total 190 tests pass.
+`core/models`, `core/services`, and `core/security` (migrations 0002 and 0003) are the persistence layer on PostgreSQL. Connections store credentials only as Fernet-encrypted tokens, and several keys can be configured so keys can be rotated. Metrics and engines have immutable versions numbered without gaps, even under concurrent registration; registering identical content returns the existing version. A job pins its metric version, engine version, connection, parameters, and a configuration hash, and is submitted with a client-supplied idempotency key through one atomic insert-or-find, so a retried request returns the original job and a reused key with a different request is rejected. The job lifecycle (claim, lease, heartbeat, reclaim, fail, requeue, complete) is made of compare-and-set operations fenced on a per-claim attempt counter: a worker whose lease expired and whose job was reclaimed can neither update the job nor store a result. The database itself enforces immutability, legal status transitions, and that a result exists exactly when its job has succeeded (checked at commit), so the rules hold even if code bypasses the services. It is covered by 103 invariant tests against real PostgreSQL, using real threads for the concurrency cases and raw SQL to prove the database rules, and by deliberate breakage of the code to confirm the tests notice. These are mechanisms, not a running system: there is no worker yet, so nothing claims or runs jobs, and no REST endpoint stores one.
+
+`core/api` is the REST API's foundation, built with FastAPI. Every failure uses one error format with a stable code and no echoed values; requests are size-limited and unknown fields are rejected; each request carries an id used in responses and logs; and the access log records only method, path, and status. `GET /healthz` reports the process is alive and `GET /readyz` reports whether Postgres is reachable and the schema is current. `POST /v1/metrics/validate` is a stateless dry run: it checks a metric template, returns its content hash, and, given sample values, shows the exact SQL and bound parameters a worker would run, without touching a database. It is covered by 39 invariant tests (including deliberate breakage of the API to confirm the tests notice). **Not built yet:** registering connections, metrics, and engines; submitting jobs and fetching status and results; and publishing to Kafka. The database services they need now exist; the endpoints are not written yet, and Kafka publishing waits on the local infrastructure (Component 7).
+
+In total 332 tests pass: 14 database, 39 connector, 65 metric, 72 engine, 39 API, and 103 persistence and security.
 
 ### Example: a parameterized metric
 
@@ -162,7 +170,7 @@ git clone https://github.com/faithscript/statloom.git
 cd statloom
 
 python3 -m venv .venv
-.venv/bin/pip install "sqlalchemy>=2" "psycopg[binary]>=3" alembic pydantic jinja2 numpy scipy pytest
+.venv/bin/pip install "sqlalchemy>=2" "psycopg[binary]>=3" alembic pydantic jinja2 numpy scipy cryptography fastapi uvicorn httpx pytest
 
 # run all tests (starts and stops a throwaway local Postgres automatically)
 .venv/bin/pytest -q
@@ -173,12 +181,43 @@ python3 -m venv .venv
 .venv/bin/pytest tests/invariants/test_connectors.py -v
 .venv/bin/pytest tests/invariants/test_metrics.py -v
 .venv/bin/pytest tests/invariants/test_engines.py -v
+.venv/bin/pytest tests/invariants/test_api.py -v
+.venv/bin/pytest tests/invariants/test_models.py tests/invariants/test_jobs.py -v   # database rules and the job lifecycle
+.venv/bin/pytest tests/invariants/test_secrets.py -v
 
 # or use your own Postgres
 TEST_PG_URL="postgresql+psycopg://user:pass@localhost:5432/postgres" .venv/bin/pytest -q
 ```
 
 If no Postgres is found and `TEST_PG_URL` is unset, the tests skip rather than fail.
+
+To create the schema in your own database and encrypt connection credentials, set a database URL and a Fernet key (several comma-separated keys allow rotation; the newest goes first):
+
+```bash
+export DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/statloom"
+export STATLOOM_SECRET_KEY="$(.venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+.venv/bin/alembic upgrade head
+```
+
+The tests set their own key and databases.
+
+### Try the API
+
+The stateless endpoints work without a database:
+
+```bash
+.venv/bin/python -m uvicorn core.api:create_app --factory --no-access-log
+
+curl -s localhost:8000/healthz
+curl -s -X POST localhost:8000/v1/metrics/validate -H 'content-type: application/json' -d '{
+  "sql_template": "SELECT variant, revenue AS value FROM orders WHERE experiment_id = :experiment_id",
+  "metric_type": "continuous",
+  "parameters": [{"name": "experiment_id", "type": "string"}],
+  "sample_values": {"experiment_id": "exp_42"}
+}'
+```
+
+`/readyz` returns 503 until the app is given a database. Wiring a database, and configuring logging, is part of the pending work.
 
 ## Roadmap
 
